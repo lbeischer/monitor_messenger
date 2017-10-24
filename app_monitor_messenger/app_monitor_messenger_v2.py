@@ -1,16 +1,13 @@
-# Python script to write event to PostgreSQL database
+# Python script to write event to databases specified in config.ini
 #
 # Lewis Beischer
+# 24/10/2017
 
 # This section imports the required libraries for the messenger
 
 import psycopg2 # This imports the Python to Postgresql library - this will need to be replaced if sending to a different DB
-import os
-import time
-import datetime
-import csv
-import os.path
-import sys
+import os, time, datetime, csv, sys # Importing system packages
+import configparser # Importing config parser
 
 
 username_var = os.environ.get("USERNAME")
