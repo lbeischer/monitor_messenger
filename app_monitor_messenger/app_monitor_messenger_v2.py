@@ -5,9 +5,9 @@
 
 # This section imports the required libraries for the messenger
 
-import psycopg2 # This imports the Python to Postgresql library - this will need to be replaced if sending to a different DB
 import os, time, datetime, csv, sys # Importing system packages
 import configparser # Importing config parser
+import turbodbc
 
 
 username_var = os.environ.get("USERNAME")
@@ -22,6 +22,19 @@ event_type_var = str(sys.argv[2])
 application_var = str(sys.argv[1])
 
 connection_made = False # Setting connection made to false - the program will then always log unless a successful connection is made
+
+config = configparser.ConfigParser()
+config.read('config.ini')
+
+if config['exasol']:
+	
+
+conn = turbodbc.connect(driver="",
+						server=,
+						port=,
+						database=,
+						uid=,
+						pwd=)
 
 # The script is designed to log application events (as specified by the user)
 # If it can't connect to the database it saves these events to a log file
