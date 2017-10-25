@@ -12,9 +12,7 @@ import configparser # Importing config parser
 
 username_var = os.environ.get("USERNAME")
 currenttime_var = datetime.datetime.now()
-
 # Setting global variables - the current username according to the OS (likely to be windows) and the date time from the system
-
 
 # Below are mnaully set variables for each version of the executable
 # These take the first two arguments after the executable i.e. app_messenger.exe -Start -Alteryx
