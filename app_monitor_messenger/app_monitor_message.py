@@ -11,6 +11,7 @@ import configparser # Importing config parser
 import EXASOL
 import psycopg2
 import re
+import xml.etree.ElementTree as ET
 
 def quote_str(string):
     return "'" + str(string) + "'"
@@ -59,23 +60,28 @@ if config['exasol'].getboolean('use'):
 
 
 sql = 'INSERT INTO {}.{} ("username", "application", "event_type", "event_timestamp") VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
-print(sql)
+id_sql =  'SELECT "id" FROM {}.{} WHERE "username" = {} AND "application" = {} AND "event_type" = {} AND "event_timestamp" = {}'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
+
+exasol_cur.execute(sql)
+exasol_conn.commit()
+print("Commited")
+exasol_cur.execute(id_sql)
+id_result = exasol_cur.fetchone()
+print(id_result[0])
 
 for root, dirs, files in os.walk(user_alteryx_log_folder):
     alteryx_run_count = 0
+    alteryx_parsed_workflows = 0
     alteryx_run_time = []
     for fname in files:
         file_path = os.path.join(root,fname)
         filestat = os.stat(file_path)
         file_mod_timestamp = datetime.datetime.fromtimestamp(filestat.st_mtime)
         if file_mod_timestamp > last_alteryx_log_date:
-            print(fname)
-            # print(file_mod_timestamp)
             alteryx_run_count += 1
             log_file = open(file_path,'r', encoding='utf-16-le')
             log_file_lines = log_file.readlines()
             first_line = log_file_lines[0]
-            print(first_line)
             last_line = log_file_lines[len(log_file_lines)-1]
 
             # Compile regex and search for times
@@ -88,14 +94,29 @@ for root, dirs, files in os.walk(user_alteryx_log_folder):
             yxmd_location = re.search('\.yxmd', first_line_begin_removed)
             if yxmd_location:
                 workflow = first_line_begin_removed[0:yxmd_location.end()]
-                print(workflow)
+                alteryx_parsed_workflows += 1
+                workflow_path = workflow.replace(u'\ufeff', '')
+                workflow_xml = ET.parse(workflow_path)
+                workflow_root = workflow_xml.getroot()
+                alteryx_nodes = workflow_root.find('Nodes')
+                alteryx_tools = alteryx_nodes.findall('Node')
+                for tool in alteryx_tools:
+                    tool_tag = tool.find('GuiSettings').get('Plugin')
+                    if tool_tag is not None:
+                        print(tool_tag)
+                    else:
+                        macro = tool.find('EngineSettings').get('Macro')
+                        if macro:
+                            print("It is a macro")
+                            print(macro)
 
 
-
+print("Parsed workflows: " + str(alteryx_parsed_workflows))
 print(alteryx_run_time)
-print(alteryx_run_count)
+print("Alteryx workflows run: " + str(alteryx_run_count))
 total_alteryx_runtime = 0
 zero_time = datetime.datetime.strptime("00:00:00.000","%H:%M:%S.%f")
+
 for runtime in alteryx_run_time:
     t = datetime.datetime.strptime(runtime,"%H:%M:%S.%f")
     time_change = t - zero_time
@@ -103,16 +124,7 @@ for runtime in alteryx_run_time:
     total_alteryx_runtime = total_alteryx_runtime + time_change.seconds
     print(total_alteryx_runtime)
 
-# try:
-#     conn = EXASOL.connect(websocket_str, uid, pwd)
-#     connection_made = True
-#     print("Connected")
-#     cur = conn.cursor()
-#     cur.execute(sql)
-#     conn.commit()
-#     print("Commited")
-# except:
-#     print("Could not connect")
+
 
 # # The script is designed to log application events (as specified by the user)
 # # If it can't connect to the database it saves these events to a log file
