@@ -16,6 +16,21 @@ import xml.etree.ElementTree as ET
 def quote_str(string):
     return "'" + str(string) + "'"
 
+def cross_tab(unique_list, cross_list, tag=None):
+    output_list = []
+    for tool in unique_list:
+        number_of_occur = cross_list.count(tool)
+        if tag:
+            output_list.append([tool, tag, number_of_occur])
+        else:
+            output_list.append([tool, number_of_occur])
+    return output_list
+
+def tag_list_of_list(list_to_tag, tag):
+    for row in list_to_tag:
+        row.append(tag)
+
+
 username_var = os.environ.get("USERNAME")
 currenttime_var = datetime.datetime.now()
 # Setting global variables - the current username according to the OS (likely to be windows) and the date time from the system
@@ -59,20 +74,21 @@ if config['exasol'].getboolean('use'):
         print("Unable to connect")
 
 
-sql = 'INSERT INTO {}.{} ("username", "application", "event_type", "event_timestamp") VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
-id_sql =  'SELECT "id" FROM {}.{} WHERE "username" = {} AND "application" = {} AND "event_type" = {} AND "event_timestamp" = {}'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
+sql_alteryx = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP, ALTERYX_LOGS, TOTAL_RUNTIME, PARSED_WORKFLOWS) VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
+sql_others = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP) VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
 
-exasol_cur.execute(sql)
+exasol_cur.execute(sql_others)
 exasol_conn.commit()
 print("Commited")
-exasol_cur.execute(id_sql)
-id_result = exasol_cur.fetchone()
-print(id_result[0])
 
 for root, dirs, files in os.walk(user_alteryx_log_folder):
+    total_parsed_alteryx_tool_list = []
     alteryx_run_count = 0
     alteryx_parsed_workflows = 0
     alteryx_run_time = []
+    # Creating lists for alteryx and macro tools for pre-processing
+    alteryx_tool_list = []
+    macro_tool_list = []
     for fname in files:
         file_path = os.path.join(root,fname)
         filestat = os.stat(file_path)
@@ -92,27 +108,72 @@ for root, dirs, files in os.walk(user_alteryx_log_folder):
             # Compile regex and search for workflow directory
             first_line_begin_removed = re.sub('Started running ','',first_line)
             yxmd_location = re.search('\.yxmd', first_line_begin_removed)
+
             if yxmd_location:
+                # Clean directory path
                 workflow = first_line_begin_removed[0:yxmd_location.end()]
-                alteryx_parsed_workflows += 1
                 workflow_path = workflow.replace(u'\ufeff', '')
-                workflow_xml = ET.parse(workflow_path)
-                workflow_root = workflow_xml.getroot()
-                alteryx_nodes = workflow_root.find('Nodes')
-                alteryx_tools = alteryx_nodes.findall('Node')
-                for tool in alteryx_tools:
-                    tool_tag = tool.find('GuiSettings').get('Plugin')
-                    if tool_tag is not None:
-                        print(tool_tag)
-                    else:
-                        macro = tool.find('EngineSettings').get('Macro')
-                        if macro:
-                            print("It is a macro")
-                            print(macro)
+
+                # Setup regex for tool parsing and macro parsing
+                tool_parse_regex = re.compile('\w+$')
+                macro_parse_regex = re.compile('.+?(?=.yxmc)')
+
+                #Try and parse yxmd file with XML
+                try:
+                    workflow_xml = ET.parse(workflow_path)
+                    alteryx_parsed_workflows += 1
+                    
+
+                    # Parsing XML files
+                    workflow_root = workflow_xml.getroot()
+                    alteryx_nodes = workflow_root.find('Nodes')
+                    alteryx_tools = alteryx_nodes.findall('Node')
+
+                    for tool in alteryx_tools:
+
+                        tool_tag = tool.find('GuiSettings').get('Plugin')
+
+                        if tool_tag is not None:
+                            tool_list = []
+                            tool_name_regex = re.search(tool_parse_regex, tool_tag)
+                            if tool_name_regex:
+                                try:
+                                    tool_name = tool_name_regex.group(0)
+                                except:
+                                    tool_name = "Unknown Tool"
+                            else:
+                                tool_name = "Unknown Tool"
+                            alteryx_tool_list.append(tool_name)
+                        else:
+                            macro = tool.find('EngineSettings').get('Macro')
+                            if macro:
+                                try:
+                                    macro_name_regex = re.search(macro_parse_regex, macro).group(0)
+                                    macro_name_regex_final = re.search(tool_parse_regex, macro_name_regex)
+                                    if macro_name_regex_final:
+                                        macro_name = macro_name_regex_final.group(0)
+                                    else:
+                                        macro_name = macro_name_regex
+                                except:
+                                    macro_name = "Unknown Macro"
+                                macro_tool_list.append(macro_name)
+                except:
+                    print("Log file not accessible")
+
+
+# Creating cross-tab entries to insert into the database
+unique_alteryx_tool_list = list(set(alteryx_tool_list))
+unique_alteryx_macro_list = list(set(macro_tool_list))
+
+# Creating cross-tab lists
+macro_final_tool_list = cross_tab(unique_alteryx_macro_list, macro_tool_list, "Macro")
+alteryx_final_tool_list = cross_tab(unique_alteryx_tool_list, alteryx_tool_list, "AlteryxTool")
+total_parsed_alteryx_tool_list = macro_final_tool_list + alteryx_final_tool_list
+tag_list_of_list(total_parsed_alteryx_tool_list, username_var)
+tag_list_of_list(total_parsed_alteryx_tool_list, str(currenttime_var))
 
 
 print("Parsed workflows: " + str(alteryx_parsed_workflows))
-print(alteryx_run_time)
 print("Alteryx workflows run: " + str(alteryx_run_count))
 total_alteryx_runtime = 0
 zero_time = datetime.datetime.strptime("00:00:00.000","%H:%M:%S.%f")
@@ -120,10 +181,9 @@ zero_time = datetime.datetime.strptime("00:00:00.000","%H:%M:%S.%f")
 for runtime in alteryx_run_time:
     t = datetime.datetime.strptime(runtime,"%H:%M:%S.%f")
     time_change = t - zero_time
-    print(time_change)
     total_alteryx_runtime = total_alteryx_runtime + time_change.seconds
-    print(total_alteryx_runtime)
 
+print(total_alteryx_runtime)
 
 
 # # The script is designed to log application events (as specified by the user)
