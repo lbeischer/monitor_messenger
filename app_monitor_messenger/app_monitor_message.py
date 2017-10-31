@@ -30,16 +30,16 @@ def tag_list_of_list(list_to_tag, tag):
     for row in list_to_tag:
         row.append(tag)
 
-def app_logs_to_exasol(exasol_connection, exasol_cur, schema, table, username, password, application, event, timestamp, alteryx_logs=None, runtime=None, parsed_workflows=None):
+def app_logs_to_exasol(exasol_connection, exasol_cur, schema, table, username, application, event, timestamp, alteryx_logs=None, runtime=None, parsed_workflows=None):
     # This is a function to insert data into exasol
     # Pre-create the SQL statements and have variables ready to be used
-    if alteryx_logs & runtime & parsed_workflows:
-        sql_alteryx = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP, ALTERYX_LOGS, TOTAL_RUNTIME, PARSED_WORKFLOWS) VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
+    if (alteryx_logs is not None) & (runtime is not None) & (parsed_workflows is not None):
+        sql_statement = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP, ALTERYX_LOGS, TOTAL_RUNTIME, PARSED_WORKFLOWS) VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
     else:
-        sql_others = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP) VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
+        sql_statement = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP) VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
 
     # After preparing the SQL statements we need to execute these and then commit the changes to the database
-    exasol_cur.execute(sql_others)
+    exasol_cur.execute(sql_statement)
     exasol_connection.commit()
 
 def alteryx_logs_to_exasol(exasol_connection, exasol_cur, schema, table, alteryx_logs_list=None):
@@ -49,7 +49,6 @@ def alteryx_logs_to_exasol(exasol_connection, exasol_cur, schema, table, alteryx
         # Then loop through the list of entries to insert and format the SQL before executing the transaction
         for entry in alteryx_logs_list:
             sql_alteryx_logs = 'INSERT INTO {}.{} (TOOL_NAME, TOOL_TYPE, TOOL_COUNT, USERNAME, EVENT_TIMESTAMP, APPLICATION) VALUES ({}, {}, {}, {}, {}, {});'.format(schema, table, quote_str(entry[0]), quote_str(entry[1]), entry[2], quote_str(entry[3]), quote_str(entry[4]), quote_str(entry[5]))
-            print(sql_alteryx_logs)
             exasol_cur.execute(sql_alteryx_logs)
             # Commiting the transaction to the database
             exasol_connection.commit()
@@ -251,7 +250,7 @@ if exasol_connection_made or postgres_connection_made:
     # If it can't connect to the database it saves these events to a log file
     # If it is able to connect to the database it first tries to send the log file of application events
     # It then tries to send the current application event
-
+    print("Connection made sending files")
     try:    
         # If successfully connected then send the logfile if exists
         # The logfile should be populated with all events that we haven't been able to log whilst unable to connect to the DB
@@ -260,27 +259,34 @@ if exasol_connection_made or postgres_connection_made:
             # This checks if there is a log file (i.e. any unsent application events)
             # If it detects the file it then opens it and reads it as a .csv with an application event in each row
 
-            #print("Log file found, sending to database")
+            print("Log file found, sending to database")
             try:
-                with open('log.txt', 'rb') as logfile:
+                with open('log.txt', 'r') as logfile:
                     reader = csv.reader(logfile, delimiter=",")
                     # Reading the text file as a csv and saving as an object of tuples
                     try:
-
+                        rw = 0
                         for row in reader:
+                            rw =+ 1
+                            print(rw)
                             # Iterating through rows and inserting them into database using connection created earlier
-                            cur.execute("INSERT INTO public.application_events (username, application, event_type, event_timestamp) VALUES (%s, %s, %s, %s)",(row[0], row[1], row[2], row[3]))
-                            conn.commit()
-                        #print("Logfile added to Database")
+                            if postgres_connection_made:
+                                cur.execute("INSERT INTO public.application_events (username, application, event_type, event_timestamp) VALUES (%s, %s, %s, %s)",(row[0], row[1], row[2], row[3]))
+                                conn.commit()
+
+                            if exasol_connection_made:
+                                app_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_table, row[0], row[1], row[2], row[3])
+
                         logfile.close()
                         # Closing the file and removing so future tests don't try and send empty files
+                        print("Successfully Added and closed file")
                         os.remove('log.txt')
-                        #print("Logfile deleted")
+                        print("Logfile deleted")
 
-                    except:
+                    except Exception as e:
 
-                        #print("Unable to execute query")
-                        #print(e)
+                        print("Unable to execute query")
+                        print(e)
                         logfile.close()
                         # If unable to send all the logfile we close the log file so that we don't delete these events
                         # The file is also not removed here so at the next application event it tries to send again
@@ -306,8 +312,6 @@ if exasol_connection_made or postgres_connection_made:
         # This is what the script executes if a connection cannot be created to the DB
         postgres_connection_made = False
         #print ("Unable to connect to the database")
-
-
 
 
 
@@ -387,7 +391,7 @@ except:
 
     try:
 
-        with open('log.txt','a') as logfile:
+        with open('log.txt','a', encoding = 'utf-8', newline='') as logfile:
             writer = csv.writer(logfile, delimiter=",")
             writer.writerows(entry)
 
