@@ -30,11 +30,11 @@ def tag_list_of_list(list_to_tag, tag):
     for row in list_to_tag:
         row.append(tag)
 
-def app_logs_to_exasol(exasol_connection, exasol_cur, schema, table, username, application, event, timestamp, alteryx_logs=None, runtime=None, parsed_workflows=None):
+def app_logs_to_exasol(exasol_connection, exasol_cur, schema, table, username, application, event, timestamp, alteryx_logs=None, runtime=None, parsed_workflows=None, logger_count=None):
     # This is a function to insert data into exasol
     # Pre-create the SQL statements and have variables ready to be used
-    if (alteryx_logs is not None) & (runtime is not None) & (parsed_workflows is not None):
-        sql_statement = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP, ALTERYX_LOGS, TOTAL_RUNTIME, PARSED_WORKFLOWS) VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
+    if (alteryx_logs is not None) & (runtime is not None) & (parsed_workflows is not None) & (logger_count is not None):
+        sql_statement = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP, ALTERYX_LOGS, TOTAL_RUNTIME, PARSED_WORKFLOWS, LOGGER_COUNT) VALUES ({}, {}, {}, {}, {}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var), alteryx_logs, runtime, parsed_workflows, logger_count)
     else:
         sql_statement = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP) VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
 
@@ -47,17 +47,31 @@ def alteryx_logs_to_exasol(exasol_connection, exasol_cur, schema, table, alteryx
     # Check to make sure there are actually logs in the list before executing
     if alteryx_logs_list is not None:
         # Then loop through the list of entries to insert and format the SQL before executing the transaction
-        for entry in alteryx_logs_list:
+        python_alteryx_logs_list = list(alteryx_logs_list)
+        if len(python_alteryx_logs_list) > 1:
+            values_for_entry = ""
+            idx = 0
+            for entry in python_alteryx_logs_list:
+                if idx == 0:
+                    value_entry = "({},{},{},{},{},{})".format(quote_str(entry[0]), quote_str(entry[1]), entry[2], quote_str(entry[3]), quote_str(entry[4]), quote_str(entry[5]))
+                else:
+                    value_entry = ",({},{},{},{},{},{})".format(quote_str(entry[0]), quote_str(entry[1]), entry[2], quote_str(entry[3]), quote_str(entry[4]), quote_str(entry[5]))
+                values_for_entry = values_for_entry + value_entry
+                idx =+ 1
+            print(values_for_entry)
+            sql_alteryx_logs = 'INSERT INTO {}.{} (TOOL_NAME, TOOL_TYPE, TOOL_COUNT, USERNAME, EVENT_TIMESTAMP, APPLICATION) VALUES {};'.format(schema, table, values_for_entry) 
+        else:
             sql_alteryx_logs = 'INSERT INTO {}.{} (TOOL_NAME, TOOL_TYPE, TOOL_COUNT, USERNAME, EVENT_TIMESTAMP, APPLICATION) VALUES ({}, {}, {}, {}, {}, {});'.format(schema, table, quote_str(entry[0]), quote_str(entry[1]), entry[2], quote_str(entry[3]), quote_str(entry[4]), quote_str(entry[5]))
-            exasol_cur.execute(sql_alteryx_logs)
-            # Commiting the transaction to the database
-            exasol_connection.commit()
+        exasol_cur.execute(sql_alteryx_logs)
+        # Commiting the transaction to the database
+        exasol_connection.commit()
 
 
 def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_var, currenttime_var, application_var):
     for root, dirs, files in os.walk(user_alteryx_log_folder):
         # Loop through the files in the log directory and inialisie variables 
         total_parsed_alteryx_tool_list = []
+        logger_tools_found = 0
         alteryx_run_count = 0
         alteryx_parsed_workflows = 0
         alteryx_run_time = []
@@ -97,7 +111,9 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
                     try:
                         workflow_xml = ET.parse(workflow_path)
                         alteryx_parsed_workflows += 1
-                        
+                        # Intialising tool lists for each workflow
+                        workflow_alteryx_tool_list = []
+                        workflow_macro_tool_list = []
 
                         # Parsing XML files
                         workflow_root = workflow_xml.getroot()
@@ -120,7 +136,7 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
                                 else:
                                     tool_name = "Unknown Tool"
                                 # Append the tool on the list
-                                alteryx_tool_list.append(tool_name)
+                                workflow_alteryx_tool_list.append(tool_name)
                             else:
                                 macro = tool.find('EngineSettings').get('Macro')
                                 if macro:
@@ -134,13 +150,28 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
                                     except:
                                         macro_name = "Unknown Macro"
                                     # Append the macro on the list
-                                    macro_tool_list.append(macro_name)
+                                    workflow_macro_tool_list.append(macro_name)
+
+                        if "Logger" in workflow_macro_tool_list:
+                            # If a logger is found in the macro list then add 1 to logger tools found variable
+                            # and DO NOT add the tools to the unique list
+                            logger_tools_found += 1
+                        else:
+                            # If no logger is found then append the tools onto the total list
+                            if len(workflow_alteryx_tool_list) > 0:
+                                alteryx_tool_list.append(workflow_alteryx_tool_list)
+                            if len(workflow_macro_tool_list) > 0:
+                                macro_tool_list.append(workflow_macro_tool_list)
+
+                            print(workflow_alteryx_tool_list)
+                            print(workflow_macro_tool_list)
                     except:
                         print("Log file not accessible")
 
     # Creating cross-tab entries to insert into the database
     unique_alteryx_tool_list = list(set(alteryx_tool_list))
     unique_alteryx_macro_list = list(set(macro_tool_list))
+
     # Creating cross-tab lists
     macro_final_tool_list = cross_tab(unique_alteryx_macro_list, macro_tool_list, "Macro")
     alteryx_final_tool_list = cross_tab(unique_alteryx_tool_list, alteryx_tool_list, "AlteryxTool")
@@ -160,13 +191,15 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
         time_change = t - zero_time
         total_alteryx_runtime = total_alteryx_runtime + time_change.seconds
     print(total_alteryx_runtime)
-    return total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime
+    return total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime, logger_tools_found
 
 
 # -----------------------------------------------------------------------------------------------------------#
 #                                 START OF MAIN SCRIPT LOGIC
 # -----------------------------------------------------------------------------------------------------------#
 
+# Exception log is used to log any exceptions found during running
+exception_log = []
 
 username_var = os.environ.get("USERNAME")
 currenttime_var = datetime.datetime.now()
@@ -241,71 +274,90 @@ if config['postgres'].getboolean('use'):
         # If successfully connected then send the logfile if exists
         # The logfile should be populated with all events that we haven't been able to log whilst unable to connect to the DB   
     except:
-        print("Unable to connect to postgres")
+        postgres_connection_made = False
+
+# -----------------------------------------------------------------------------------------------------------#
+#                                 SEND ANY CURRENT LOG FILES STORED
+# -----------------------------------------------------------------------------------------------------------#
+
 
 if exasol_connection_made or postgres_connection_made:
     # If a connection is made then we send the current log files to the database
+    print("Connection made sending files")
 
     # The script is designed to log application events (as specified by the user)
     # If it can't connect to the database it saves these events to a log file
     # If it is able to connect to the database it first tries to send the log file of application events
     # It then tries to send the current application event
-    print("Connection made sending files")
     try:    
         # If successfully connected then send the logfile if exists
         # The logfile should be populated with all events that we haven't been able to log whilst unable to connect to the DB
-
         if os.path.isfile('log.txt'):
             # This checks if there is a log file (i.e. any unsent application events)
             # If it detects the file it then opens it and reads it as a .csv with an application event in each row
-
             print("Log file found, sending to database")
             try:
                 with open('log.txt', 'r') as logfile:
                     reader = csv.reader(logfile, delimiter=",")
                     # Reading the text file as a csv and saving as an object of tuples
                     try:
-                        rw = 0
                         for row in reader:
-                            rw =+ 1
-                            print(rw)
                             # Iterating through rows and inserting them into database using connection created earlier
+
                             if postgres_connection_made:
-                                cur.execute("INSERT INTO public.application_events (username, application, event_type, event_timestamp) VALUES (%s, %s, %s, %s)",(row[0], row[1], row[2], row[3]))
-                                conn.commit()
+                                # If a postgres configuration is created then try sending log file
+                                # If this creates an exception (error) then set connection to false
+                                try:
+                                    cur.execute("INSERT INTO public.application_events (username, application, event_type, event_timestamp) VALUES (%s, %s, %s, %s)",(row[0], row[1], row[2], row[3]))
+                                    conn.commit()
+                                except:
+                                    postgres_connection_made = False
 
                             if exasol_connection_made:
-                                app_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_table, row[0], row[1], row[2], row[3])
+                                # If an exasol configuration is available and connection has been made try sending log file
+                                # If this creates an exception (error) then set the connection to false
+                                try:
+                                    app_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_table, row[0], row[1], row[2], row[3])
+                                except:
+                                    exasol_connection_made = False
 
-                        logfile.close()
-                        # Closing the file and removing so future tests don't try and send empty files
-                        print("Successfully Added and closed file")
-                        os.remove('log.txt')
-                        print("Logfile deleted")
+                        if postgres_connection_made or exasol_connection_made:
+                            # Only close the file and remove if EITHER connection is still true (i.e. the log file was sent to at least one of the databases)
+                            logfile.close()
+                            # Closing the file and removing so future tests don't try and send empty files
+                            os.remove('log.txt')
 
                     except Exception as e:
-
-                        print("Unable to execute query")
-                        print(e)
-                        logfile.close()
                         # If unable to send all the logfile we close the log file so that we don't delete these events
                         # The file is also not removed here so at the next application event it tries to send again
-
-                with open('alteryx_condensed_logs.txt', 'r', encoding = 'utf-8') as alteryx_logfile_read:
-                    alteryx_reader = csv.reader(alteryx_logfile_read, delimiter="," )
-                    # Reading the text file as a csv and saving as an object of tuples
-                    if config['exasol'].getboolean('use'):
-                        print("Sending file to exasol")
-                        alteryx_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_alteryx_table, alteryx_reader)
-                        alteryx_logfile_read.close()
-
-            except:
-
+                        logfile.close()
+                        postgres_connection_made = False
+                        exasol_connection_made = False
+            except Exception as logfile_exception:
                 # Exception if unable to open the log file
-                print("Unable to open file")
+                exception_log.append(logfile_exception)
 
+        # We only want the alteryx workflow parsing to be present when we are actually
+        if 'alteryx' in application_var.lower():
+            # If alteryx is in the applciation variables
+            if os.path.isfile('alteryx_condensed_logs.txt'):
+                    with open('alteryx_condensed_logs.txt', 'r', encoding = 'utf-8') as alteryx_logfile_read:
+                        alteryx_reader = csv.reader(alteryx_logfile_read, delimiter="," )
+                        # Reading the text file as a csv and saving as an object of tuples
+                        if config['exasol'].getboolean('use'):
+                        # If Exasol is configured send the log file to Exasol
+                            try:
+                                alteryx_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_alteryx_table, alteryx_reader)
+                                # If successful in sending the logs to Exasol close the file and remove
+                                alteryx_logfile_read.close()
+                                os.remove('alteryx_condensed_logs.txt')
+
+                            except Exception as e:
+                                # If there is an erro when sending the log file to Exasol set the connection to False so logs are created
+                                exasol_connection_made = False
+                                # print(e)
         else:
-            # This is where the script will go if no log file is found
+            # This is where the script will go if no log files are found
             postgres_connection_made = False
             #print("No log file found")
     except:
@@ -314,106 +366,116 @@ if exasol_connection_made or postgres_connection_made:
         #print ("Unable to connect to the database")
 
 
-
+# -----------------------------------------------------------------------------------------------------------#
+#                         GENERATE NEW ENTRIES AND EITHER SEND OR ADD TO LOG FILES
+# -----------------------------------------------------------------------------------------------------------#
 
 # Here if the application is Alteryx we will parse the alteryx log files and either send them to the database (if connections have been made)
 # Alternatively we save them to log files
 
-if application_var.lower() == 'alteryx':
-
-    total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime = parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_var, currenttime_var, application_var)
-
-
-
-    try:
-
-        with open('alteryx_condensed_logs.txt','a', encoding = 'utf-8', newline='') as alteryx_logfile:
-            alteryx_writer = csv.writer(alteryx_logfile, delimiter=",")
-            alteryx_writer.writerows(total_parsed_alteryx_tool_list)
-
-            # Writing the unsent application events to a csv file with each line representing an application event
-
-        alteryx_logfile.close()
-        print("File closed")
-        # Closing log file to ensure that no other changes are saved and can be accessed by the script if required again
-        if os.path.isfile('alteryx_condensed_logs.txt'):
-            # This checks if there is a log file (i.e. any unsent application events)
-            # If it detects the file it then opens it and reads it as a .csv with an application event in each row
-            try:
-                #something
-                with open('alteryx_condensed_logs.txt', 'rb') as alteryx_logfile_read:
-                    alteryx_reader = csv.reader(alteryx_logfile_read, delimiter=",")
-                    # Reading the text file as a csv and saving as an object of tuples
-                    try:
-                        # Some note here
-                        for row in alteryx_reader:
-                            # Iterating through rows and inserting them into database using connection created earlier
-                            print(row)
-                            # cur.execute("INSERT INTO public.application_events (username, application, event_type, event_timestamp) VALUES (%s, %s, %s, %s)",(row[0], row[1], row[2], row[3]))
-                            # conn.commit()
-                        #print("Logfile added to Database")
-                        logfile.close()
-                        # Closing the file and removing so future tests don't try and send empty files
-                    except:
-                        #Something didn't work
-                        print("something else")
-            except:
-                #something else didn't work
-                print("something")
-    except:
-        # connection_made = False
-        print("Unable to write to log")
-
-
-
+# If the event in an Alteryx shortcut we will parse Alteryx files to either insert them or save them to log files
+if 'alteryx' in application_var.lower():
+    # Only parse the Alteryx files if they are either opening or closing alteryx
+    total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime, logger_tools_count = parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_var, currenttime_var, application_var)
+    print(currenttime_var.strftime("%Y-%m-%d %H:%M:%S.%f"))
 
 
 # Now we have tried to send the logfile we need to send the actual application event 
+# If EITHER connection has been made then send off the event log and the alteryx parsed log
+if postgres_connection_made or exasol_connection_made:
 
-try:
-    # Here we are re-using the connection we made earlier in the script
-    # If this connection was not made earlier it will fail the try and move to the exception
+    if postgres_connection_made:
+        try:
+            # Here we are re-using the connection we made earlier in the script
+            # If asdadasd
+            # Inserting current values into the database
+            postgres_cur.execute("INSERT INTO public.application_events (username, application, event_type, event_timestamp) VALUES (%s, %s, %s, %s)",(username_var, application_var, event_type_var, currenttime_var))
+            postgres_conn.commit()
 
-    cur.execute("INSERT INTO public.application_events (username, application, event_type, event_timestamp) VALUES (%s, %s, %s, %s)",(username_var, application_var, event_type_var, currenttime_var))
-    conn.commit()
-    # Inserting current values into the database
-except:
+        except Exception as insert_error:
+            # If there is an error inserting set connection as false
+            postgres_connection_made = False
+
+
+    if exasol_connection_made:
+        # If an exasol configuration is available and connection has been made try sending log file
+        # If this creates an exception (error) then set the connection to false
+
+        # Test if the Alteryx files have been parsed (and if there are runs) insert these details otherwise just insert the basic values
+        if alteryx_run_count:
+            try:
+                app_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_table, username_var, application_var, event_type_var, currenttime_var, alteryx_run_count, total_alteryx_runtime, alteryx_parsed_workflows, logger_tools_count)
+            except:
+                # If there was an error inserting set connection as false
+                exasol_connection_made = False
+                print("Unable to send app_event logs alteryx")
+        else:
+            try:
+                app_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_table, username_var, application_var, event_type_var, currenttime_var) #alteryx_logs, runtime, parsed_workflows, logger_numbers
+            except:
+                # If there was an error inserting set connection as false
+                exasol_connection_made = False
+                print("Unable to app event logs non-alteryx")
+
+
+# Only if BOTH connections have failed should you write the logs to a file for later sending to databases
+if (not postgres_connection_made) and (not exasol_connection_made):
+
+    # If the alteryx logs have been parsed then the tool list should be inserted into log files
+    if total_parsed_alteryx_tool_list:
+        try:
+            # Opening a file to contain the tool list of parsed workflows
+            with open('alteryx_condensed_logs.txt','a', encoding = 'utf-8', newline='') as alteryx_logfile:
+                alteryx_writer = csv.writer(alteryx_logfile, delimiter=",")
+                alteryx_writer.writerows(total_parsed_alteryx_tool_list)
+                # Writing the unsent application events to a csv file with each line representing an application event
+
+            alteryx_logfile.close()
+            # Closing log file to ensure that no other changes are saved and can be accessed by the script if required again
+        except Exception as logging_error_exception:
+            exception_log.append(logging_error_exception)
+
 
     # This part of the script runs if the values cannot be added to the database
     # This adds the application event to the logfile 
-
-    #print("Unable to execute query")
-    #print(e)
-
-    entry = [[username_var, application_var, event_type_var, currenttime_var],]
+    if alteryx_run_count:
+        entry = [[username_var, application_var, event_type_var, currenttime_var, alteryx_run_count, total_alteryx_runtime, alteryx_parsed_workflows, logger_tools_count],]
+    else:
+        entry = [[username_var, application_var, event_type_var, currenttime_var, '', '', '', ''],]
 
     # Creating a tuple (array) of the application event - effectively an array of objects (although this should never exceed one object)
-
     try:
-
+        # Open a log file to write new logs or append onto existing logs
         with open('log.txt','a', encoding = 'utf-8', newline='') as logfile:
             writer = csv.writer(logfile, delimiter=",")
             writer.writerows(entry)
-
             # Writing the unsent application events to a csv file with each line representing an application event
 
         logfile.close()
         # Closing log file to ensure that no other changes are saved and can be accessed by the script if required again
         
-        #print("Written to log file")
-    except:
-        postgres_connection_made = False
-        #print("Unable to write to log")
+    except Exception as single_app_event_error:
+        exception_log.append(single_app_event_error)
+
 
 # This checks if a connection was made and if it was it closes the connection (which conserves connection slots and also prevents intrusions)
-
 if postgres_connection_made:
     try:
-
-        conn.close()
+        # Closing the postgres connection if exists
+        postgres_conn.close()
     except:
         postgres_connection_made = False
-        #print("Unable to Close Connection")
 else:
     postgres_connection_made = False
-    #print("Connection not made")
+
+
+# Checking if Exasol connection made and closing if exists
+if exasol_connection_made:
+    try:
+        # Closing the Exasol connection if exists
+        exasol_connection.close()
+    except:
+        exasol_connection_made = False
+else:
+    exasol_connection_made = False
+

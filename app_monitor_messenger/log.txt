@@ -1,1 +1,1 @@
-l.beischer,Alteryx,start,2017-10-31 18:33:21.374322
+l.beischer,Alteryx,start,2017-11-01 17:15:56.939862,5,869,3,3
