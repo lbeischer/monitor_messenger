@@ -58,7 +58,6 @@ def alteryx_logs_to_exasol(exasol_connection, exasol_cur, schema, table, alteryx
                     value_entry = ",({},{},{},{},{},{})".format(quote_str(entry[0]), quote_str(entry[1]), entry[2], quote_str(entry[3]), quote_str(entry[4]), quote_str(entry[5]))
                 values_for_entry = values_for_entry + value_entry
                 idx =+ 1
-            print(values_for_entry)
             sql_alteryx_logs = 'INSERT INTO {}.{} (TOOL_NAME, TOOL_TYPE, TOOL_COUNT, USERNAME, EVENT_TIMESTAMP, APPLICATION) VALUES {};'.format(schema, table, values_for_entry) 
         else:
             sql_alteryx_logs = 'INSERT INTO {}.{} (TOOL_NAME, TOOL_TYPE, TOOL_COUNT, USERNAME, EVENT_TIMESTAMP, APPLICATION) VALUES ({}, {}, {}, {}, {}, {});'.format(schema, table, quote_str(entry[0]), quote_str(entry[1]), entry[2], quote_str(entry[3]), quote_str(entry[4]), quote_str(entry[5]))
@@ -110,6 +109,7 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
                     #Try and parse yxmd file with XML
                     try:
                         workflow_xml = ET.parse(workflow_path)
+                        print(workflow_path)
                         alteryx_parsed_workflows += 1
                         # Intialising tool lists for each workflow
                         workflow_alteryx_tool_list = []
@@ -131,6 +131,30 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
                                 if tool_name_regex:
                                     try:
                                         tool_name = tool_name_regex.group(0)
+                                        # Testing to see if the tool is a container as this may container more tools
+                                        if tool_name == "ToolContainer":
+                                            # If the tool is a container look at the child tools and parse these out as well
+                                            container_tools = tool.find('ChildNodes').findall('Node')
+                                            if container_tools:
+                                                for cont_tool in container_tools:
+                                                    # Add all of the tools to the workflow list 
+                                                    cont_tool_tag = tool.find('GuiSettings').get('Plugin')
+
+                                                    if cont_tool_tag is not None:
+                                                        cont_tool_list = []
+                                                        cont_tool_name_regex = re.search(tool_parse_regex, cont_tool_tag)
+                                                        if cont_tool_name_regex:
+                                                            try:
+                                                                cont_tool_name = cont_tool_name_regex.group(0)
+                                                                # Checking to see if level 2 is a container also
+                                                                if cont_tool_name == "ToolContainer":
+                                                                    # If the 2nd level is also a container look into this but stop here
+                                                                    container_container_tools = cont_tool.find('ChildNodes').findall('Node')
+                                                                    if container_container_tools:
+                                                                        for cont_cont_tool in container_container_tools:
+                                                                            
+
+
                                     except:
                                         tool_name = "Unknown Tool"
                                 else:
@@ -158,31 +182,44 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
                             logger_tools_found += 1
                         else:
                             # If no logger is found then append the tools onto the total list
-                            if len(workflow_alteryx_tool_list) > 0:
-                                alteryx_tool_list.append(workflow_alteryx_tool_list)
-                            if len(workflow_macro_tool_list) > 0:
-                                macro_tool_list.append(workflow_macro_tool_list)
-
                             print(workflow_alteryx_tool_list)
                             print(workflow_macro_tool_list)
-                    except:
+                            if len(workflow_alteryx_tool_list) > 0:
+                                for tool in workflow_alteryx_tool_list:
+                                    alteryx_tool_list.append(tool)
+                            if len(workflow_macro_tool_list) > 0:
+                                for macro in workflow_macro_tool_list:
+                                    macro_tool_list.append(macro)
+
+                    except Exception as parsing_error:
+                        print(parsing_error)
                         print("Log file not accessible")
 
+
     # Creating cross-tab entries to insert into the database
-    unique_alteryx_tool_list = list(set(alteryx_tool_list))
-    unique_alteryx_macro_list = list(set(macro_tool_list))
+    if len(alteryx_tool_list) > 0:
+        unique_alteryx_tool_list = list(set(alteryx_tool_list))
+        alteryx_final_tool_list = cross_tab(unique_alteryx_tool_list, alteryx_tool_list, "AlteryxTool")
+    else:
+        alteryx_final_tool_list = []
+    if len(macro_tool_list) > 0:
+        unique_alteryx_macro_list = list(set(macro_tool_list))
+        macro_final_tool_list = cross_tab(unique_alteryx_macro_list, macro_tool_list, "Macro")
+    else:
+        macro_final_tool_list = []
 
     # Creating cross-tab lists
-    macro_final_tool_list = cross_tab(unique_alteryx_macro_list, macro_tool_list, "Macro")
-    alteryx_final_tool_list = cross_tab(unique_alteryx_tool_list, alteryx_tool_list, "AlteryxTool")
     total_parsed_alteryx_tool_list = macro_final_tool_list + alteryx_final_tool_list
-    tag_list_of_list(total_parsed_alteryx_tool_list, username_var)
-    tag_list_of_list(total_parsed_alteryx_tool_list, str(currenttime_var))
-    tag_list_of_list(total_parsed_alteryx_tool_list, application_var)
+    if len(total_parsed_alteryx_tool_list) > 0:
+        tag_list_of_list(total_parsed_alteryx_tool_list, username_var)
+        tag_list_of_list(total_parsed_alteryx_tool_list, str(currenttime_var))
+        tag_list_of_list(total_parsed_alteryx_tool_list, application_var)
+    else:
+        total_parsed_alteryx_tool_list = None
+
+    print(total_parsed_alteryx_tool_list)
 
     # Calculating run time
-    print("Parsed workflows: " + str(alteryx_parsed_workflows))
-    print("Alteryx workflows run: " + str(alteryx_run_count))
     total_alteryx_runtime = 0
     zero_time = datetime.datetime.strptime("00:00:00.000","%H:%M:%S.%f")
     # Loop for runtime
@@ -190,7 +227,7 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
         t = datetime.datetime.strptime(runtime,"%H:%M:%S.%f")
         time_change = t - zero_time
         total_alteryx_runtime = total_alteryx_runtime + time_change.seconds
-    print(total_alteryx_runtime)
+
     return total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime, logger_tools_found
 
 
@@ -214,6 +251,9 @@ application_var = str(sys.argv[1])
 # The program will  always log unless a successful connection is made
 exasol_connection_made = False # Setting exasol connection made to false 
 postgres_connection_made = False # Setting postgres connection made to false
+
+# Initialising whether the alteryx log files have been written correctly
+written_alteryx_log_files = True
 
 # Setting the Alteryx logging location (generated by xml_logging_enabler)
 user_alteryx_log_folder = "C:/Users/"+username_var+"/Documents/Alteryx Log"
@@ -283,7 +323,6 @@ if config['postgres'].getboolean('use'):
 
 if exasol_connection_made or postgres_connection_made:
     # If a connection is made then we send the current log files to the database
-    print("Connection made sending files")
 
     # The script is designed to log application events (as specified by the user)
     # If it can't connect to the database it saves these events to a log file
@@ -295,7 +334,6 @@ if exasol_connection_made or postgres_connection_made:
         if os.path.isfile('log.txt'):
             # This checks if there is a log file (i.e. any unsent application events)
             # If it detects the file it then opens it and reads it as a .csv with an application event in each row
-            print("Log file found, sending to database")
             try:
                 with open('log.txt', 'r') as logfile:
                     reader = csv.reader(logfile, delimiter=",")
@@ -358,12 +396,10 @@ if exasol_connection_made or postgres_connection_made:
                                 # print(e)
         else:
             # This is where the script will go if no log files are found
-            postgres_connection_made = False
-            #print("No log file found")
+            exasol_connection_made = False
     except:
         # This is what the script executes if a connection cannot be created to the DB
-        postgres_connection_made = False
-        #print ("Unable to connect to the database")
+        exasol_connection_made = False
 
 
 # -----------------------------------------------------------------------------------------------------------#
@@ -377,7 +413,6 @@ if exasol_connection_made or postgres_connection_made:
 if 'alteryx' in application_var.lower():
     # Only parse the Alteryx files if they are either opening or closing alteryx
     total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime, logger_tools_count = parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_var, currenttime_var, application_var)
-    print(currenttime_var.strftime("%Y-%m-%d %H:%M:%S.%f"))
 
 
 # Now we have tried to send the logfile we need to send the actual application event 
@@ -387,7 +422,6 @@ if postgres_connection_made or exasol_connection_made:
     if postgres_connection_made:
         try:
             # Here we are re-using the connection we made earlier in the script
-            # If asdadasd
             # Inserting current values into the database
             postgres_cur.execute("INSERT INTO public.application_events (username, application, event_type, event_timestamp) VALUES (%s, %s, %s, %s)",(username_var, application_var, event_type_var, currenttime_var))
             postgres_conn.commit()
@@ -402,13 +436,15 @@ if postgres_connection_made or exasol_connection_made:
         # If this creates an exception (error) then set the connection to false
 
         # Test if the Alteryx files have been parsed (and if there are runs) insert these details otherwise just insert the basic values
-        if alteryx_run_count:
+        if 'alteryx' in application_var.lower():
             try:
                 app_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_table, username_var, application_var, event_type_var, currenttime_var, alteryx_run_count, total_alteryx_runtime, alteryx_parsed_workflows, logger_tools_count)
-            except:
+            except Exception as exasol_app_event_logger_new:
                 # If there was an error inserting set connection as false
                 exasol_connection_made = False
+                written_alteryx_log_files = False
                 print("Unable to send app_event logs alteryx")
+                print(exasol_app_event_logger_new)
         else:
             try:
                 app_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_table, username_var, application_var, event_type_var, currenttime_var) #alteryx_logs, runtime, parsed_workflows, logger_numbers
@@ -431,6 +467,7 @@ if (not postgres_connection_made) and (not exasol_connection_made):
                 # Writing the unsent application events to a csv file with each line representing an application event
 
             alteryx_logfile.close()
+            written_alteryx_log_files = True
             # Closing log file to ensure that no other changes are saved and can be accessed by the script if required again
         except Exception as logging_error_exception:
             exception_log.append(logging_error_exception)
@@ -457,6 +494,21 @@ if (not postgres_connection_made) and (not exasol_connection_made):
     except Exception as single_app_event_error:
         exception_log.append(single_app_event_error)
 
+# Only if the alteryx tool lists have not been written to either DB or log files do we update the config file and delete old alteryx log files
+if written_alteryx_log_files:
+    # This should only run if the parsed logfiles have either been sent to the database or written to log files
+    config['lastupdate']['timestamp'] = currenttime_var.strftime("%Y-%m-%d %H:%M:%S.%f")
+    with open('config.ini', 'w') as new_configfile:
+        config.write(new_configfile)
+    # Delete any Alteryx log files if they are older than 30 days, this is to stop 
+    for file in os.listdir(user_alteryx_log_folder):
+        fullpath   = os.path.join(user_alteryx_log_folder,file)
+        timestamp  = os.stat(fullpath).st_ctime # get timestamp of file
+        createtime = datetime.datetime.fromtimestamp(timestamp)
+        now        = datetime.datetime.now()
+        delta      = now - createtime
+        if delta.days > 30:
+            os.remove(fullpath)
 
 # This checks if a connection was made and if it was it closes the connection (which conserves connection slots and also prevents intrusions)
 if postgres_connection_made:
