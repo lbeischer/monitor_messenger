@@ -65,6 +65,43 @@ def alteryx_logs_to_exasol(exasol_connection, exasol_cur, schema, table, alteryx
         # Commiting the transaction to the database
         exasol_connection.commit()
 
+def tool_name_extract(node, tool_parse_regex, macro_parse_regex):
+    # Function designed to extract a tool name from a node
+    # Either parsing tool (nodes) as an Alteryx tool or Macro
+    tool_tag = node.find('GuiSettings').get('Plugin')
+
+    if tool_tag is not None:
+        # If there is something returned from Plugin
+        tool_name_regex = re.search(tool_parse_regex, tool_tag)
+        if tool_name_regex:
+            try:
+                tool_name = tool_name_regex.group(0)
+                # Testing to see if the tool is a container as this may container more tools
+            except:
+                tool_name = "Unknown Tool"
+        else:
+            tool_name = "Unknown Tool"
+        # Append the tool on the list
+        workflow_alteryx_tool_list.append(tool_name)
+    else:
+        macro = tool.find('EngineSettings').get('Macro')
+        if macro:
+            try:
+                macro_name_regex = re.search(macro_parse_regex, macro).group(0)
+                macro_name_regex_final = re.search(tool_parse_regex, macro_name_regex)
+                if macro_name_regex_final:
+                    macro_name = macro_name_regex_final.group(0)
+                else:
+                    macro_name = macro_name_regex
+            except:
+                macro_name = "Unknown Macro"
+
+    if tool_name:
+        return tool_name, None
+    elif macro_name:
+        return None, macro_name
+    else:
+        return "Unknown Tool", None
 
 def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_var, currenttime_var, application_var):
     for root, dirs, files in os.walk(user_alteryx_log_folder):
@@ -122,59 +159,42 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
 
                         # Either parsing tool (nodes) as an Alteryx tool or Macro
                         for tool in alteryx_tools:
+                            tool_name, macro_name = tool_name_extract(tool, tool_parse_regex, macro_parse_regex)
+                            
+                            # Check to see if there are tools
+                            if tool_name == "ToolContainer":
+                                # If the tool is a container look at the child tools and parse these out as well
+                                container_tools = tool.find('ChildNodes').findall('Node')
 
-                            tool_tag = tool.find('GuiSettings').get('Plugin')
+                                if container_tools:
+                                    for cont_tool in container_tools:
+                                        # Add all of the tools to the workflow list 
+                                        cont_tool_name, cont_macro_name = tool_name_extract(cont_tool, tool_parse_regex, macro_parse_regex)
 
-                            if tool_tag is not None:
-                                tool_list = []
-                                tool_name_regex = re.search(tool_parse_regex, tool_tag)
-                                if tool_name_regex:
-                                    try:
-                                        tool_name = tool_name_regex.group(0)
-                                        # Testing to see if the tool is a container as this may container more tools
-                                        if tool_name == "ToolContainer":
-                                            # If the tool is a container look at the child tools and parse these out as well
-                                            container_tools = tool.find('ChildNodes').findall('Node')
-                                            if container_tools:
-                                                for cont_tool in container_tools:
-                                                    # Add all of the tools to the workflow list 
-                                                    cont_tool_tag = tool.find('GuiSettings').get('Plugin')
+                                        if cont_tool_name == "ToolContainer":
 
-                                                    if cont_tool_tag is not None:
-                                                        cont_tool_list = []
-                                                        cont_tool_name_regex = re.search(tool_parse_regex, cont_tool_tag)
-                                                        if cont_tool_name_regex:
-                                                            try:
-                                                                cont_tool_name = cont_tool_name_regex.group(0)
-                                                                # Checking to see if level 2 is a container also
-                                                                if cont_tool_name == "ToolContainer":
-                                                                    # If the 2nd level is also a container look into this but stop here
-                                                                    container_container_tools = cont_tool.find('ChildNodes').findall('Node')
-                                                                    if container_container_tools:
-                                                                        for cont_cont_tool in container_container_tools:
-                                                                            
+                                            container_container_tools = cont_tool.find('ChildNodes').findall('Node')
 
+                                            if container_container_tools:
+                                                for cont_cont_tool in container_container_tools:
+                                                    # 2nd inside of the container
+                                                    cont_cont_tool_name, cont_cont_macro_name = tool_name_extract(cont_cont_tool, tool_parse_regex, macro_parse_regex)
 
-                                    except:
-                                        tool_name = "Unknown Tool"
-                                else:
-                                    tool_name = "Unknown Tool"
-                                # Append the tool on the list
+                                                    if cont_cont_tool_name:
+                                                        workflow_alteryx_tool_list.append(cont_cont_tool_name)
+                                                    if cont_cont_macro_name:
+                                                        workflow_macro_tool_list.append(cont_cont_macro_name)
+
+                                        if cont_tool_name:
+                                            workflow_alteryx_tool_list.append(cont_tool_name)
+                                        if cont_macro_name:
+                                            workflow_macro_tool_list.append(cont_macro_name)
+
+                            if tool_name:
                                 workflow_alteryx_tool_list.append(tool_name)
-                            else:
-                                macro = tool.find('EngineSettings').get('Macro')
-                                if macro:
-                                    try:
-                                        macro_name_regex = re.search(macro_parse_regex, macro).group(0)
-                                        macro_name_regex_final = re.search(tool_parse_regex, macro_name_regex)
-                                        if macro_name_regex_final:
-                                            macro_name = macro_name_regex_final.group(0)
-                                        else:
-                                            macro_name = macro_name_regex
-                                    except:
-                                        macro_name = "Unknown Macro"
-                                    # Append the macro on the list
-                                    workflow_macro_tool_list.append(macro_name)
+                            if macro_name:
+                                workflow_macro_tool_list.append(macro_name)
+
 
                         if "Logger" in workflow_macro_tool_list:
                             # If a logger is found in the macro list then add 1 to logger tools found variable
