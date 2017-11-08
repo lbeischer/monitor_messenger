@@ -76,25 +76,32 @@ def tool_name_extract(node, tool_parse_regex, macro_parse_regex):
         if tool_name_regex:
             try:
                 tool_name = tool_name_regex.group(0)
+                macro_name = None
                 # Testing to see if the tool is a container as this may container more tools
             except:
                 tool_name = "Unknown Tool"
+                macro_name = None
         else:
             tool_name = "Unknown Tool"
-        # Append the tool on the list
-        workflow_alteryx_tool_list.append(tool_name)
+            macro_name = None
     else:
-        macro = tool.find('EngineSettings').get('Macro')
+        macro = node.find('EngineSettings').get('Macro')
         if macro:
             try:
                 macro_name_regex = re.search(macro_parse_regex, macro).group(0)
                 macro_name_regex_final = re.search(tool_parse_regex, macro_name_regex)
                 if macro_name_regex_final:
                     macro_name = macro_name_regex_final.group(0)
+                    tool_name = None
                 else:
                     macro_name = macro_name_regex
+                    tool_name = None
             except:
                 macro_name = "Unknown Macro"
+                tool_name = None
+        else:
+            macro_name = "Unknown Macro"
+            tool_name = None
 
     if tool_name:
         return tool_name, None
@@ -103,10 +110,12 @@ def tool_name_extract(node, tool_parse_regex, macro_parse_regex):
     else:
         return "Unknown Tool", None
 
-def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_var, currenttime_var, application_var):
+def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_var, currenttime_var, application_var, unparsed_alteryx_workflows=None):
     for root, dirs, files in os.walk(user_alteryx_log_folder):
         # Loop through the files in the log directory and inialisie variables 
         total_parsed_alteryx_tool_list = []
+        if unparsed_alteryx_workflows is None:
+            unparsed_alteryx_workflows = []
         logger_tools_found = 0
         alteryx_run_count = 0
         alteryx_parsed_workflows = 0
@@ -146,12 +155,11 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
                     #Try and parse yxmd file with XML
                     try:
                         workflow_xml = ET.parse(workflow_path)
-                        print(workflow_path)
+
                         alteryx_parsed_workflows += 1
                         # Intialising tool lists for each workflow
                         workflow_alteryx_tool_list = []
                         workflow_macro_tool_list = []
-
                         # Parsing XML files
                         workflow_root = workflow_xml.getroot()
                         alteryx_nodes = workflow_root.find('Nodes')
@@ -160,7 +168,6 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
                         # Either parsing tool (nodes) as an Alteryx tool or Macro
                         for tool in alteryx_tools:
                             tool_name, macro_name = tool_name_extract(tool, tool_parse_regex, macro_parse_regex)
-                            
                             # Check to see if there are tools
                             if tool_name == "ToolContainer":
                                 # If the tool is a container look at the child tools and parse these out as well
@@ -202,8 +209,6 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
                             logger_tools_found += 1
                         else:
                             # If no logger is found then append the tools onto the total list
-                            print(workflow_alteryx_tool_list)
-                            print(workflow_macro_tool_list)
                             if len(workflow_alteryx_tool_list) > 0:
                                 for tool in workflow_alteryx_tool_list:
                                     alteryx_tool_list.append(tool)
@@ -212,8 +217,9 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
                                     macro_tool_list.append(macro)
 
                     except Exception as parsing_error:
-                        print(parsing_error)
-                        print("Log file not accessible")
+                        if unparsed_alteryx_workflows is not None:
+                            unparsed_alteryx_workflows.append([workflow_path, currenttime_var.strftime("%Y-%m-%d %H:%M:%S.%f")])
+                        # print(parsing_error)
 
 
     # Creating cross-tab entries to insert into the database
@@ -237,7 +243,125 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
     else:
         total_parsed_alteryx_tool_list = None
 
-    print(total_parsed_alteryx_tool_list)
+    # Calculating run time
+    total_alteryx_runtime = 0
+    zero_time = datetime.datetime.strptime("00:00:00.000","%H:%M:%S.%f")
+    # Loop for runtime
+    for runtime in alteryx_run_time:
+        t = datetime.datetime.strptime(runtime,"%H:%M:%S.%f")
+        time_change = t - zero_time
+        total_alteryx_runtime = total_alteryx_runtime + time_change.seconds
+
+    return total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime, logger_tools_found, unparsed_alteryx_workflows
+
+
+def parse_alteryx_workflows(alteryx_workflow_list, username_var, currenttime_var, application_var):
+    # Loop through the files in the log directory and inialisie variables 
+    total_parsed_alteryx_tool_list = []
+    logger_tools_found = 0
+    alteryx_run_count = 0
+    alteryx_parsed_workflows = 0
+    alteryx_run_time = []
+    unparsed_alteryx_workflows = []
+    # Creating lists for alteryx and macro tools for pre-processing
+    alteryx_tool_list = []
+    macro_tool_list = []
+    # Setup regex for tool parsing and macro parsing
+    tool_parse_regex = re.compile('\w+$')
+    macro_parse_regex = re.compile('.+?(?=.yxmc)')
+
+    for alteryx_workflow in alteryx_workflow_list:
+        date_of_workflow = alteryx_workflow[1]
+        alteryx_workflow_path = alteryx_workflow[0]
+        alteryx_workflow_original_parse_date = dateutilparser.parse(date_of_workflow)
+        #Try and parse yxmd file with XML
+        try:
+            workflow_xml = ET.parse(alteryx_workflow_path)
+
+            alteryx_parsed_workflows += 1
+            # Intialising tool lists for each workflow
+            workflow_alteryx_tool_list = []
+            workflow_macro_tool_list = []
+            # Parsing XML files
+            workflow_root = workflow_xml.getroot()
+            alteryx_nodes = workflow_root.find('Nodes')
+            alteryx_tools = alteryx_nodes.findall('Node')
+
+            # Either parsing tool (nodes) as an Alteryx tool or Macro
+            for tool in alteryx_tools:
+
+                tool_name, macro_name = tool_name_extract(tool, tool_parse_regex, macro_parse_regex)
+                # Check to see if there are tools
+                if tool_name == "ToolContainer":
+                    # If the tool is a container look at the child tools and parse these out as well
+                    container_tools = tool.find('ChildNodes').findall('Node')
+                    if container_tools:
+                        for cont_tool in container_tools:
+                            # Add all of the tools to the workflow list 
+                            cont_tool_name, cont_macro_name = tool_name_extract(cont_tool, tool_parse_regex, macro_parse_regex)
+                            if cont_tool_name == "ToolContainer":
+
+                                container_container_tools = cont_tool.find('ChildNodes').findall('Node')
+
+                                if container_container_tools:
+                                    for cont_cont_tool in container_container_tools:
+                                        # 2nd inside of the container
+                                        cont_cont_tool_name, cont_cont_macro_name = tool_name_extract(cont_cont_tool, tool_parse_regex, macro_parse_regex)
+
+                                        if cont_cont_tool_name:
+                                            workflow_alteryx_tool_list.append(cont_cont_tool_name)
+                                        if cont_cont_macro_name:
+                                            workflow_macro_tool_list.append(cont_cont_macro_name)
+
+                            if cont_tool_name:
+                                workflow_alteryx_tool_list.append(cont_tool_name)
+                            if cont_macro_name:
+                                workflow_macro_tool_list.append(cont_macro_name)
+                if tool_name:
+                    workflow_alteryx_tool_list.append(tool_name)
+                if macro_name:
+                    workflow_macro_tool_list.append(macro_name)
+
+
+            if "Logger" in workflow_macro_tool_list:
+                # If a logger is found in the macro list then add 1 to logger tools found variable
+                # and DO NOT add the tools to the unique list
+                logger_tools_found += 1
+            else:
+                # If no logger is found then append the tools onto the total list
+                if len(workflow_alteryx_tool_list) > 0:
+                    for tool in workflow_alteryx_tool_list:
+                        alteryx_tool_list.append(tool)
+                if len(workflow_macro_tool_list) > 0:
+                    for macro in workflow_macro_tool_list:
+                        macro_tool_list.append(macro)
+
+        except Exception as parsing_error:
+            # If there is an error ensure that the filepath and date associated with it are saved
+            unparsed_alteryx_workflows.append([alteryx_workflow_path, date_of_workflow])
+            # print(parsing_error)
+
+
+    # Creating cross-tab entries to insert into the database
+    if len(alteryx_tool_list) > 0:
+        unique_alteryx_tool_list = list(set(alteryx_tool_list))
+        alteryx_final_tool_list = cross_tab(unique_alteryx_tool_list, alteryx_tool_list, "AlteryxTool")
+    else:
+        alteryx_final_tool_list = []
+    if len(macro_tool_list) > 0:
+        unique_alteryx_macro_list = list(set(macro_tool_list))
+        macro_final_tool_list = cross_tab(unique_alteryx_macro_list, macro_tool_list, "Macro")
+    else:
+        macro_final_tool_list = []
+
+    # Creating cross-tab lists
+    total_parsed_alteryx_tool_list = macro_final_tool_list + alteryx_final_tool_list
+    if len(total_parsed_alteryx_tool_list) > 0:
+        tag_list_of_list(total_parsed_alteryx_tool_list, username_var)
+        tag_list_of_list(total_parsed_alteryx_tool_list, str(currenttime_var))
+        tag_list_of_list(total_parsed_alteryx_tool_list, application_var)
+    else:
+        total_parsed_alteryx_tool_list = None
 
     # Calculating run time
     total_alteryx_runtime = 0
@@ -248,8 +372,7 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
         time_change = t - zero_time
         total_alteryx_runtime = total_alteryx_runtime + time_change.seconds
 
-    return total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime, logger_tools_found
-
+    return total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime, logger_tools_found, unparsed_alteryx_workflows
 
 # -----------------------------------------------------------------------------------------------------------#
 #                                 START OF MAIN SCRIPT LOGIC
@@ -257,6 +380,18 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
 
 # Exception log is used to log any exceptions found during running
 exception_log = []
+
+# Create get the current list of unparsed workflows
+try:
+    with open('unparsed_alteryx_workflows_log.txt', 'r') as logfile:
+        unparsed_alteryx_workflows_csv = csv.reader(logfile, delimiter=",")
+        unparsed_alteryx_workflows = []
+        for row in unparsed_alteryx_workflows_csv:
+            unparsed_alteryx_workflows.append(row)
+except:
+    print("Error loading unparsed workflow logs")
+    unparsed_alteryx_workflows = None
+
 
 username_var = os.environ.get("USERNAME")
 currenttime_var = datetime.datetime.now()
@@ -432,8 +567,17 @@ if exasol_connection_made or postgres_connection_made:
 # If the event in an Alteryx shortcut we will parse Alteryx files to either insert them or save them to log files
 if 'alteryx' in application_var.lower():
     # Only parse the Alteryx files if they are either opening or closing alteryx
-    total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime, logger_tools_count = parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_var, currenttime_var, application_var)
-
+    total_parsed_alteryx_tool_list, alteryx_parsed_workflows, alteryx_run_count, total_alteryx_runtime, logger_tools_count, unparsed_alteryx_workflows = parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_var, currenttime_var, application_var, unparsed_alteryx_workflows)
+    # Now we parse the unparsed alteryx workflows
+    unparsed_alteryx_tool_list, unparsed_alteryx_parsed_workflows, unparsed_alteryx_run_count, unparsed_total_alteryx_runtime, unparsed_logger_tools_found, unparsed_alteryx_workflows = parse_alteryx_workflows(unparsed_alteryx_workflows, username_var, currenttime_var, application_var)
+    # Now we need to combine the parsed workflows and unparsed workflows
+    if unparsed_alteryx_tool_list:
+        for unparsed_tool in unparsed_alteryx_tool_list:
+            total_parsed_alteryx_tool_list.append(unparsed_tool)
+        alteryx_parsed_workflows = alteryx_parsed_workflows + unparsed_alteryx_parsed_workflows
+        alteryx_run_count = alteryx_run_count + unparsed_alteryx_run_count
+        total_alteryx_runtime = total_alteryx_runtime + unparsed_total_alteryx_runtime
+        logger_tools_count = logger_tools_count + unparsed_logger_tools_found
 
 # Now we have tried to send the logfile we need to send the actual application event 
 # If EITHER connection has been made then send off the event log and the alteryx parsed log
@@ -529,6 +673,12 @@ if written_alteryx_log_files:
         delta      = now - createtime
         if delta.days > 30:
             os.remove(fullpath)
+    # Write down any unparsed alteryx workflows to a log file
+    with open('unparsed_alteryx_workflows_log.txt', 'w', encoding = 'utf-8', newline='') as unparsed_logfiles:
+                unparsed_alteryx_writer = csv.writer(unparsed_logfiles, delimiter=",")
+                unparsed_alteryx_writer.writerows(unparsed_alteryx_workflows)
+                # Writing the unparsed workflows events to a csv file with each line representing an workflow
+                unparsed_logfiles.close()
 
 # This checks if a connection was made and if it was it closes the connection (which conserves connection slots and also prevents intrusions)
 if postgres_connection_made:
