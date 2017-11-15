@@ -34,10 +34,9 @@ def app_logs_to_exasol(exasol_connection, exasol_cur, schema, table, username, a
     # This is a function to insert data into exasol
     # Pre-create the SQL statements and have variables ready to be used
     if (alteryx_logs is not None) & (runtime is not None) & (parsed_workflows is not None) & (logger_count is not None):
-        sql_statement = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP, ALTERYX_LOGS, TOTAL_RUNTIME, PARSED_WORKFLOWS, LOGGER_COUNT) VALUES ({}, {}, {}, {}, {}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var), alteryx_logs, runtime, parsed_workflows, logger_count)
+        sql_statement = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP, ALTERYX_LOGS, TOTAL_RUNTIME, PARSED_WORKFLOWS, LOGGER_COUNT) VALUES ({}, {}, {}, {}, {}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username), quote_str(application), quote_str(event), quote_str(timestamp), alteryx_logs, runtime, parsed_workflows, logger_count)
     else:
-        sql_statement = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP) VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username_var), quote_str(application_var), quote_str(event_type_var), quote_str(currenttime_var))
-
+        sql_statement = 'INSERT INTO {}.{} (USERNAME, APPLICATION, EVENT_TYPE, EVENT_TIMESTAMP) VALUES ({}, {}, {}, {});'.format(exa_schema, exa_table, quote_str(username), quote_str(application), quote_str(event), quote_str(timestamp))
     # After preparing the SQL statements we need to execute these and then commit the changes to the database
     exasol_cur.execute(sql_statement)
     exasol_connection.commit()
@@ -241,7 +240,7 @@ def parse_alteryx_logs(user_alteryx_log_folder, last_alteryx_log_date, username_
         tag_list_of_list(total_parsed_alteryx_tool_list, str(currenttime_var))
         tag_list_of_list(total_parsed_alteryx_tool_list, application_var)
     else:
-        total_parsed_alteryx_tool_list = None
+        total_parsed_alteryx_tool_list = []
 
     # Calculating run time
     total_alteryx_runtime = 0
@@ -361,7 +360,7 @@ def parse_alteryx_workflows(alteryx_workflow_list, username_var, currenttime_var
         tag_list_of_list(total_parsed_alteryx_tool_list, str(currenttime_var))
         tag_list_of_list(total_parsed_alteryx_tool_list, application_var)
     else:
-        total_parsed_alteryx_tool_list = None
+        total_parsed_alteryx_tool_list = []
 
     # Calculating run time
     total_alteryx_runtime = 0
@@ -378,12 +377,15 @@ def parse_alteryx_workflows(alteryx_workflow_list, username_var, currenttime_var
 #                                 START OF MAIN SCRIPT LOGIC
 # -----------------------------------------------------------------------------------------------------------#
 
+# Get the folder path to script and local files
+script_folder_path = os.path.dirname(sys.argv[0])
+
 # Exception log is used to log any exceptions found during running
 exception_log = []
 
 # Create get the current list of unparsed workflows
 try:
-    with open('unparsed_alteryx_workflows_log.txt', 'r') as logfile:
+    with open(os.path.join(script_folder_path,'unparsed_alteryx_workflows_log.txt'), 'r') as logfile:
         unparsed_alteryx_workflows_csv = csv.reader(logfile, delimiter=",")
         unparsed_alteryx_workflows = []
         for row in unparsed_alteryx_workflows_csv:
@@ -392,6 +394,7 @@ except:
     print("Error loading unparsed workflow logs")
     unparsed_alteryx_workflows = None
 
+total_parsed_alteryx_tool_list = []
 
 username_var = os.environ.get("USERNAME")
 currenttime_var = datetime.datetime.now()
@@ -415,7 +418,7 @@ user_alteryx_log_folder = "C:/Users/"+username_var+"/Documents/Alteryx Log"
 
 # Loading the configuration file
 config = configparser.ConfigParser()
-config.read('config.ini')
+config.read(os.path.join(script_folder_path,'config.ini'))
 
 # Importing last time Alteryx logs were read (will only be used when sending alteryx start)
 last_alteryx_log_date = dateutilparser.parse(config['lastupdate']['timestamp'])
@@ -475,7 +478,6 @@ if config['postgres'].getboolean('use'):
 #                                 SEND ANY CURRENT LOG FILES STORED
 # -----------------------------------------------------------------------------------------------------------#
 
-
 if exasol_connection_made or postgres_connection_made:
     # If a connection is made then we send the current log files to the database
 
@@ -486,17 +488,16 @@ if exasol_connection_made or postgres_connection_made:
     try:    
         # If successfully connected then send the logfile if exists
         # The logfile should be populated with all events that we haven't been able to log whilst unable to connect to the DB
-        if os.path.isfile('log.txt'):
+        if os.path.isfile(os.path.join(script_folder_path,'log.txt')):
             # This checks if there is a log file (i.e. any unsent application events)
             # If it detects the file it then opens it and reads it as a .csv with an application event in each row
             try:
-                with open('log.txt', 'r') as logfile:
+                with open(os.path.join(script_folder_path,'log.txt', 'r')) as logfile:
                     reader = csv.reader(logfile, delimiter=",")
                     # Reading the text file as a csv and saving as an object of tuples
                     try:
                         for row in reader:
                             # Iterating through rows and inserting them into database using connection created earlier
-
                             if postgres_connection_made:
                                 # If a postgres configuration is created then try sending log file
                                 # If this creates an exception (error) then set connection to false
@@ -524,6 +525,7 @@ if exasol_connection_made or postgres_connection_made:
                         # If unable to send all the logfile we close the log file so that we don't delete these events
                         # The file is also not removed here so at the next application event it tries to send again
                         logfile.close()
+                        print(e)
                         postgres_connection_made = False
                         exasol_connection_made = False
             except Exception as logfile_exception:
@@ -533,8 +535,8 @@ if exasol_connection_made or postgres_connection_made:
         # We only want the alteryx workflow parsing to be present when we are actually
         if 'alteryx' in application_var.lower():
             # If alteryx is in the applciation variables
-            if os.path.isfile('alteryx_condensed_logs.txt'):
-                    with open('alteryx_condensed_logs.txt', 'r', encoding = 'utf-8') as alteryx_logfile_read:
+            if os.path.isfile(os.path.join(script_folder_path,'alteryx_condensed_logs.txt')):
+                    with open(os.path.join(script_folder_path,'alteryx_condensed_logs.txt'), 'r', encoding = 'utf-8') as alteryx_logfile_read:
                         alteryx_reader = csv.reader(alteryx_logfile_read, delimiter="," )
                         # Reading the text file as a csv and saving as an object of tuples
                         if config['exasol'].getboolean('use'):
@@ -551,10 +553,10 @@ if exasol_connection_made or postgres_connection_made:
                                 # print(e)
         else:
             # This is where the script will go if no log files are found
-            exasol_connection_made = False
+            log_file_present = False
     except:
         # This is what the script executes if a connection cannot be created to the DB
-        exasol_connection_made = False
+        log_file_present = False
 
 
 # -----------------------------------------------------------------------------------------------------------#
@@ -579,6 +581,7 @@ if 'alteryx' in application_var.lower():
         total_alteryx_runtime = total_alteryx_runtime + unparsed_total_alteryx_runtime
         logger_tools_count = logger_tools_count + unparsed_logger_tools_found
 
+
 # Now we have tried to send the logfile we need to send the actual application event 
 # If EITHER connection has been made then send off the event log and the alteryx parsed log
 if postgres_connection_made or exasol_connection_made:
@@ -598,17 +601,16 @@ if postgres_connection_made or exasol_connection_made:
     if exasol_connection_made:
         # If an exasol configuration is available and connection has been made try sending log file
         # If this creates an exception (error) then set the connection to false
-
         # Test if the Alteryx files have been parsed (and if there are runs) insert these details otherwise just insert the basic values
         if 'alteryx' in application_var.lower():
             try:
                 app_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_table, username_var, application_var, event_type_var, currenttime_var, alteryx_run_count, total_alteryx_runtime, alteryx_parsed_workflows, logger_tools_count)
+                if len(total_parsed_alteryx_tool_list) > 0:
+                    alteryx_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_alteryx_table, total_parsed_alteryx_tool_list)
             except Exception as exasol_app_event_logger_new:
                 # If there was an error inserting set connection as false
                 exasol_connection_made = False
                 written_alteryx_log_files = False
-                print("Unable to send app_event logs alteryx")
-                print(exasol_app_event_logger_new)
         else:
             try:
                 app_logs_to_exasol(exasol_conn, exasol_cur, exa_schema, exa_table, username_var, application_var, event_type_var, currenttime_var) #alteryx_logs, runtime, parsed_workflows, logger_numbers
@@ -621,25 +623,26 @@ if postgres_connection_made or exasol_connection_made:
 # Only if BOTH connections have failed should you write the logs to a file for later sending to databases
 if (not postgres_connection_made) and (not exasol_connection_made):
 
-    # If the alteryx logs have been parsed then the tool list should be inserted into log files
-    if total_parsed_alteryx_tool_list:
-        try:
-            # Opening a file to contain the tool list of parsed workflows
-            with open('alteryx_condensed_logs.txt','a', encoding = 'utf-8', newline='') as alteryx_logfile:
-                alteryx_writer = csv.writer(alteryx_logfile, delimiter=",")
-                alteryx_writer.writerows(total_parsed_alteryx_tool_list)
-                # Writing the unsent application events to a csv file with each line representing an application event
+    if 'alteryx' in application_var.lower():
+        # If the alteryx logs have been parsed then the tool list should be inserted into log files
+        if len(total_parsed_alteryx_tool_list) > 0:
+            try:
+                # Opening a file to contain the tool list of parsed workflows
+                with open('alteryx_condensed_logs.txt','a', encoding = 'utf-8', newline='') as alteryx_logfile:
+                    alteryx_writer = csv.writer(alteryx_logfile, delimiter=",")
+                    alteryx_writer.writerows(total_parsed_alteryx_tool_list)
+                    # Writing the unsent application events to a csv file with each line representing an application event
 
-            alteryx_logfile.close()
-            written_alteryx_log_files = True
-            # Closing log file to ensure that no other changes are saved and can be accessed by the script if required again
-        except Exception as logging_error_exception:
-            exception_log.append(logging_error_exception)
+                alteryx_logfile.close()
+                written_alteryx_log_files = True
+                # Closing log file to ensure that no other changes are saved and can be accessed by the script if required again
+            except Exception as logging_error_exception:
+                exception_log.append(logging_error_exception)
 
 
     # This part of the script runs if the values cannot be added to the database
     # This adds the application event to the logfile 
-    if alteryx_run_count:
+    if 'alteryx' in application_var.lower():
         entry = [[username_var, application_var, event_type_var, currenttime_var, alteryx_run_count, total_alteryx_runtime, alteryx_parsed_workflows, logger_tools_count],]
     else:
         entry = [[username_var, application_var, event_type_var, currenttime_var, '', '', '', ''],]
@@ -647,7 +650,7 @@ if (not postgres_connection_made) and (not exasol_connection_made):
     # Creating a tuple (array) of the application event - effectively an array of objects (although this should never exceed one object)
     try:
         # Open a log file to write new logs or append onto existing logs
-        with open('log.txt','a', encoding = 'utf-8', newline='') as logfile:
+        with open(os.path.join(script_folder_path,'log.txt'),'a', encoding = 'utf-8', newline='') as logfile:
             writer = csv.writer(logfile, delimiter=",")
             writer.writerows(entry)
             # Writing the unsent application events to a csv file with each line representing an application event
@@ -662,7 +665,7 @@ if (not postgres_connection_made) and (not exasol_connection_made):
 if written_alteryx_log_files:
     # This should only run if the parsed logfiles have either been sent to the database or written to log files
     config['lastupdate']['timestamp'] = currenttime_var.strftime("%Y-%m-%d %H:%M:%S.%f")
-    with open('config.ini', 'w') as new_configfile:
+    with open(os.path.join(script_folder_path,'config.ini'), 'w') as new_configfile:
         config.write(new_configfile)
     # Delete any Alteryx log files if they are older than 30 days, this is to stop 
     for file in os.listdir(user_alteryx_log_folder):
@@ -674,7 +677,7 @@ if written_alteryx_log_files:
         if delta.days > 30:
             os.remove(fullpath)
     # Write down any unparsed alteryx workflows to a log file
-    with open('unparsed_alteryx_workflows_log.txt', 'w', encoding = 'utf-8', newline='') as unparsed_logfiles:
+    with open(os.path.join(script_folder_path,'unparsed_alteryx_workflows_log.txt'), 'w', encoding = 'utf-8', newline='') as unparsed_logfiles:
                 unparsed_alteryx_writer = csv.writer(unparsed_logfiles, delimiter=",")
                 unparsed_alteryx_writer.writerows(unparsed_alteryx_workflows)
                 # Writing the unparsed workflows events to a csv file with each line representing an workflow
