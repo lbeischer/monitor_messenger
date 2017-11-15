@@ -378,7 +378,13 @@ def parse_alteryx_workflows(alteryx_workflow_list, username_var, currenttime_var
 # -----------------------------------------------------------------------------------------------------------#
 
 # Get the folder path to script and local files
-script_folder_path = os.path.dirname(sys.argv[0])
+if getattr(sys, 'frozen', False):
+    # If the application is run as a bundle, the pyInstaller bootloader
+    # extends the sys module by a flag frozen=True and sets the app 
+    # path into variable _MEIPASS'.
+    script_folder_path = sys._MEIPASS
+else:
+    script_folder_path = os.path.dirname(os.path.abspath(__file__))
 
 # Exception log is used to log any exceptions found during running
 exception_log = []
