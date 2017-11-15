@@ -396,8 +396,8 @@ try:
         unparsed_alteryx_workflows = []
         for row in unparsed_alteryx_workflows_csv:
             unparsed_alteryx_workflows.append(row)
-except:
-    print("Error loading unparsed workflow logs")
+except Exception as unparsed_log_exception:
+    exception_log.append(unparsed_log_exception)
     unparsed_alteryx_workflows = None
 
 total_parsed_alteryx_tool_list = []
@@ -682,12 +682,26 @@ if written_alteryx_log_files:
         delta      = now - createtime
         if delta.days > 30:
             os.remove(fullpath)
-    # Write down any unparsed alteryx workflows to a log file
-    with open(os.path.join(script_folder_path,'unparsed_alteryx_workflows_log.txt'), 'w', encoding = 'utf-8', newline='') as unparsed_logfiles:
-                unparsed_alteryx_writer = csv.writer(unparsed_logfiles, delimiter=",")
-                unparsed_alteryx_writer.writerows(unparsed_alteryx_workflows)
-                # Writing the unparsed workflows events to a csv file with each line representing an workflow
-                unparsed_logfiles.close()
+    # Check to see if we have unparsed alteryx workflows
+    if unparsed_alteryx_workflows is not None:
+        if len(unparsed_alteryx_workflows)>0:
+            # Write down any unparsed alteryx workflows to a log file
+            with open(os.path.join(script_folder_path,'unparsed_alteryx_workflows_log.txt'), 'w', encoding = 'utf-8', newline='') as unparsed_logfiles:
+                        unparsed_alteryx_writer = csv.writer(unparsed_logfiles, delimiter=",")
+                        unparsed_alteryx_writer.writerows(unparsed_alteryx_workflows)
+                        # Writing the unparsed workflows events to a csv file with each line representing an workflow
+                        unparsed_logfiles.close()
+
+# Write error logs if there are some
+if exception_log is not None:
+    if len(exception_log) >0:
+        # Write down any exceptions to a log file (only keeps the latest errors)
+        with open(os.path.join(script_folder_path,'error_logs.txt'), 'w', encoding = 'utf-8', newline='') as error_log_file:
+                    error_log_writer = csv.writer(error_log_file, delimiter=",")
+                    error_log_writer.writerow(currenttime_var.strftime("%Y-%m-%d %H:%M:%S.%f"))
+                    error_log_writer.writerows(exception_log)
+                    # Writing the unparsed workflows events to a csv file with each line representing an workflow
+                    error_log_file.close()
 
 # This checks if a connection was made and if it was it closes the connection (which conserves connection slots and also prevents intrusions)
 if postgres_connection_made:
